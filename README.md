@@ -1,4 +1,10 @@
 Markdown
+
+**important!
+requires the following additional libraries:
+HikariCP-3.4.5, mysql-connector-java-5.1.33-bin, slf4j-api-1.7.36, and slf4j-nop-1.7.36
+**
+
 # Inventory & Stock Transfer System
 
 A Java Swing desktop application for managing warehouse stock, executing inter-branch stock transfers, and generating inventory status reports using a MySQL/MariaDB backend.
