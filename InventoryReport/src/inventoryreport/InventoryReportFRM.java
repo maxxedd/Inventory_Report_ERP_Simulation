@@ -14,6 +14,8 @@ import java.sql.SQLException;
 import java.util.List;
 import javax.swing.JOptionPane;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 
 
 public class InventoryReportFRM extends javax.swing.JFrame {
@@ -25,21 +27,85 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
 
     public InventoryReportFRM() {
         initComponents();
+        setupInventoryRowSelection();
+
+        // Filter the inventory table while the user types.
+        jTextField1.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                applyInventoryFilters();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                applyInventoryFilters();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                applyInventoryFilters();
+            }
+        });
+
+        // Refresh stock movements immediately when either filter changes.
+        location.addActionListener(e -> loadStockMovementTable());
+        movement.addActionListener(e -> loadStockMovementTable());
+
         refreshAllViews();
     }
 
     private void refreshAllViews() {
         loadInventoryTable();
         loadTransferTable();
+        loadStockMovementTable();
         generateReport();
+    }
+
+    private void setupInventoryRowSelection() {
+        // Allow the user to select a row in the inventory table.
+        inventoryTable.setRowSelectionAllowed(true);
+        inventoryTable.setSelectionMode(
+            javax.swing.ListSelectionModel.SINGLE_SELECTION
+        );
+
+        // Automatically populate skuInput when a row is selected.
+        inventoryTable.getSelectionModel().addListSelectionListener(e -> {
+            if (e.getValueIsAdjusting()) {
+                return;
+            }
+
+            int selectedRow = inventoryTable.getSelectedRow();
+
+            if (selectedRow >= 0) {
+                // Convert the selected row in case the table is sorted.
+                int modelRow = inventoryTable.convertRowIndexToModel(selectedRow);
+
+                // Column index 1 contains the SKU.
+                Object skuValue = inventoryTable.getModel()
+                        .getValueAt(modelRow, 1);
+
+                if (skuValue != null) {
+                    skuInput.setText(skuValue.toString());
+                }
+            }
+        });
     }
 
 
     private void performStockTransfer() {
         String sku = skuInput.getText().trim();
         String qtyStr = quantityInput.getText().trim();
-        String fromLoc = transferFromDD.getSelectedItem().toString();
-        String toLoc = transferToDD.getSelectedItem().toString();
+        Object fromSelection = transferFromDD.getSelectedItem();
+        Object toSelection = transferToDD.getSelectedItem();
+        Object notesSelection = transferReasonDD.getSelectedItem();
+        if (fromSelection == null || toSelection == null || notesSelection == null) {
+            JOptionPane.showMessageDialog(this, "Please select source, destination, and transfer reason.",
+                    "Input Error", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        String fromLoc = fromSelection.toString().trim();
+        String toLoc = toSelection.toString().trim();
+        String notes = notesSelection.toString().trim();
 
         if (sku.isEmpty() || qtyStr.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter both SKU and Quantity.", "Input Error", JOptionPane.WARNING_MESSAGE);
@@ -55,7 +121,7 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
             int qty = Integer.parseInt(qtyStr);
             if (qty <= 0) throw new NumberFormatException();
 
-            inventoryDAO.executeStockTransfer(sku, fromLoc, toLoc, qty);
+            inventoryDAO.executeStockTransfer(sku, fromLoc, toLoc, qty, notes);
 
             JOptionPane.showMessageDialog(this, "Stock transfer of " + qty + " unit(s) successful!", "Success", JOptionPane.INFORMATION_MESSAGE);
             skuInput.setText("");
@@ -71,21 +137,48 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
     }
 
     private void loadInventoryTable() {
-           DefaultTableModel model = (DefaultTableModel) inventoryTable.getModel();
-           model.setRowCount(0);
-           try {
-               List<InventoryItem> list = inventoryDAO.getAllInventory();
-               for (InventoryItem item : list) {
-                   model.addRow(new Object[]{
-                       item.getInventoryId(), item.getSku(), item.getItemName(),
-                       item.getLocationName(), item.getQuantity(), item.getReorderLevel(),
-                       String.format("%.2f", item.getUnitCost())
-                   });
-               }
-           } catch (SQLException e) {
-               JOptionPane.showMessageDialog(this, "DAO Error: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
-           }
+        applyInventoryFilters();
+
        }
+    
+    private void applyInventoryFilters() {
+        DefaultTableModel model =
+                (DefaultTableModel) inventoryTable.getModel();
+
+        model.setRowCount(0);
+
+        String keyword = jTextField1.getText().trim();
+
+        Object selectedLocation = jComboBox1.getSelectedItem();
+
+        String location = selectedLocation == null
+                ? "All Locations"
+                : selectedLocation.toString().trim();
+
+        try {
+            List<InventoryItem> list =
+                    inventoryDAO.getFilteredInventory(keyword, location);
+
+            for (InventoryItem item : list) {
+                model.addRow(new Object[]{
+                    item.getInventoryId(),
+                    item.getSku(),
+                    item.getItemName(),
+                    item.getLocationName(),
+                    item.getQuantity(),
+                    item.getReorderLevel(),
+                    String.format("%.2f", item.getUnitCost())
+                });
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Unable to load inventory: " + e.getMessage(),
+                    "Database Error",
+                    JOptionPane.ERROR_MESSAGE
+            );
+        }
+    }
 
     private void loadTransferTable() {
         DefaultTableModel model = (DefaultTableModel) transferRecord.getModel();
@@ -100,7 +193,8 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
                     st.getToLocation(), st.getQtyTransferred(),
                     String.format("%.2f", st.getUnitCost()),
                     String.format("%.2f", st.getTotalTransferCost()),
-                    st.getTransferDate()
+                    st.getTransferDate(), st.getNotes()
+
                 });
             }
             grandTotalOutput.setText(String.format("%.2f", grandTotal));
@@ -109,24 +203,89 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
         }
     }
 
-    private void generateReport() {
-        String loc = locationDD.getSelectedItem().toString();
-        String status = statusDD.getSelectedItem().toString();
-        DefaultTableModel model = (DefaultTableModel) inventoryReportTbl.getModel();
+    /** Loads stock movements using the selected location and movement-type filters. */
+    private void loadStockMovementTable() {
+        DefaultTableModel model = (DefaultTableModel) stockMovement.getModel();
         model.setRowCount(0);
 
+        Object selectedLocation = location.getSelectedItem();
+        Object selectedMovement = movement.getSelectedItem();
+
+        String locationFilter = selectedLocation == null
+                ? "All Location" : selectedLocation.toString().trim();
+        String movementFilter = selectedMovement == null
+                ? "All" : selectedMovement.toString().trim();
+
         try {
-            List<InventoryItem> list = inventoryDAO.getFilteredReport(loc, status);
-            for (InventoryItem item : list) {
+            List<StockMovement> records = inventoryDAO.getFilteredStockMovements(
+                    locationFilter, movementFilter);
+
+            for (StockMovement record : records) {
                 model.addRow(new Object[]{
-                    item.getInventoryId(), item.getSku(), item.getItemName(),
-                    item.getQuantity(), item.getReorderLevel(), item.getStatus()
+                    record.getMovementId(),
+                    record.getInventoryId(),
+                    record.getMovementType(),
+                    record.getBeginningQuantity(),
+                    record.getStockIn(),
+                    record.getStockOut(),
+                    record.getResultingQuantity(),
+                    record.getTransferId() == null ? "" : record.getTransferId(),
+                    record.getMovementDate(),
+                    record.getNotes()
                 });
             }
         } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "DAO Error: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Unable to load stock movement records: " + e.getMessage(),
+                    "Database Error",
+                    JOptionPane.ERROR_MESSAGE
+            );
         }
-    }                                      
+    }
+
+    private void generateReport() {
+        Object selectedLocation = locationDD.getSelectedItem();
+        Object selectedStatus = statusDD.getSelectedItem();
+
+        String location = (selectedLocation == null)
+                ? "All Locations"
+                : selectedLocation.toString().trim();
+
+        String status = (selectedStatus == null)
+                ? "Stock On Hand"
+                : selectedStatus.toString().trim();
+
+        DefaultTableModel model =
+                (DefaultTableModel) inventoryReportTbl.getModel();
+
+        model.setRowCount(0);
+
+        try {
+            List<InventoryItem> list =
+                    inventoryDAO.getFilteredReport(location, status);
+
+            for (InventoryItem item : list) {
+                model.addRow(new Object[]{
+                    item.getInventoryId(),
+                    item.getSku(),
+                    item.getItemName(),
+                    item.getQuantity(),
+                    item.getReorderLevel(),
+                    item.getStatus()
+                });
+            }
+
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Unable to generate inventory report: "
+                            + e.getMessage(),
+                    "Database Error",
+                    JOptionPane.ERROR_MESSAGE
+            );
+        }
+    }                                     
 
     /**
      * This method is called from within the constructor to initialize the form.
@@ -154,11 +313,24 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
         jLabel6 = new javax.swing.JLabel();
         quantityInput = new javax.swing.JTextField();
         transferButton = new javax.swing.JButton();
+        jTextField1 = new javax.swing.JTextField();
+        jLabel8 = new javax.swing.JLabel();
+        jLabel12 = new javax.swing.JLabel();
+        jComboBox1 = new javax.swing.JComboBox();
+        jLabel15 = new javax.swing.JLabel();
+        transferReasonDD = new javax.swing.JComboBox();
         jPanel2 = new javax.swing.JPanel();
         jScrollPane2 = new javax.swing.JScrollPane();
         transferRecord = new javax.swing.JTable();
         jLabel7 = new javax.swing.JLabel();
         grandTotalOutput = new javax.swing.JTextField();
+        jPanel3 = new javax.swing.JPanel();
+        jScrollPane1 = new javax.swing.JScrollPane();
+        stockMovement = new javax.swing.JTable();
+        jLabel14 = new javax.swing.JLabel();
+        location = new javax.swing.JComboBox();
+        jLabel16 = new javax.swing.JLabel();
+        movement = new javax.swing.JComboBox();
         jPanel4 = new javax.swing.JPanel();
         jScrollPane3 = new javax.swing.JScrollPane();
         inventoryReportTbl = new javax.swing.JTable();
@@ -167,10 +339,13 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
         locationDD = new javax.swing.JComboBox();
         jLabel11 = new javax.swing.JLabel();
         statusDD = new javax.swing.JComboBox();
-        generateReportButton = new javax.swing.JButton();
+        jLabel13 = new javax.swing.JLabel();
 
         setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
 
+        jPanel1.setMinimumSize(new java.awt.Dimension(1209, 628));
+
+        jLabel1.setFont(new java.awt.Font("Tahoma", 1, 18)); // NOI18N
         jLabel1.setText("Inventory Report Simulation");
 
         inventoryTable.setModel(new javax.swing.table.DefaultTableModel(
@@ -247,40 +422,85 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
             }
         });
 
+        jTextField1.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                jTextField1ActionPerformed(evt);
+            }
+        });
+
+        jLabel8.setText("Search Item (Enter Item SKU/Name)");
+
+        jLabel12.setText("Location: ");
+
+        jComboBox1.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "All Location", "Warehouse A", "Main Branch" }));
+        jComboBox1.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                jComboBox1ActionPerformed(evt);
+            }
+        });
+
+        jLabel15.setText("Notes: ");
+
+        transferReasonDD.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "Branch Replenishment", "Low Stock at Destination", "High Demand", "Overstock Redistribution", "Scheduled Stock Balancing", "Urgent Stock Request", "Others" }));
+        transferReasonDD.addActionListener(new java.awt.event.ActionListener() {
+            public void actionPerformed(java.awt.event.ActionEvent evt) {
+                transferReasonDDActionPerformed(evt);
+            }
+        });
+
         javax.swing.GroupLayout jPanel5Layout = new javax.swing.GroupLayout(jPanel5);
         jPanel5.setLayout(jPanel5Layout);
         jPanel5Layout.setHorizontalGroup(
             jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addComponent(jScrollPane4)
             .addGroup(jPanel5Layout.createSequentialGroup()
-                .addContainerGap()
-                .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
-                    .addComponent(jLabel2)
+                .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(jPanel5Layout.createSequentialGroup()
-                        .addComponent(jLabel3)
+                        .addComponent(jTextField1, javax.swing.GroupLayout.PREFERRED_SIZE, 347, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addGap(43, 43, 43)
+                        .addComponent(jLabel12)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(transferFromDD, javax.swing.GroupLayout.PREFERRED_SIZE, 164, javax.swing.GroupLayout.PREFERRED_SIZE)
+                        .addComponent(jComboBox1, javax.swing.GroupLayout.PREFERRED_SIZE, 139, javax.swing.GroupLayout.PREFERRED_SIZE))
+                    .addComponent(jLabel8)
+                    .addGroup(jPanel5Layout.createSequentialGroup()
+                        .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
+                            .addComponent(jLabel2)
+                            .addGroup(jPanel5Layout.createSequentialGroup()
+                                .addComponent(jLabel3)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(transferFromDD, javax.swing.GroupLayout.PREFERRED_SIZE, 164, javax.swing.GroupLayout.PREFERRED_SIZE)
+                                .addGap(32, 32, 32)
+                                .addComponent(jLabel4)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                                .addComponent(transferToDD, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE))
+                            .addGroup(jPanel5Layout.createSequentialGroup()
+                                .addComponent(jLabel5)
+                                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                                .addComponent(skuInput, javax.swing.GroupLayout.PREFERRED_SIZE, 367, javax.swing.GroupLayout.PREFERRED_SIZE)))
                         .addGap(32, 32, 32)
-                        .addComponent(jLabel4)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                        .addComponent(transferToDD, javax.swing.GroupLayout.PREFERRED_SIZE, 162, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addGroup(jPanel5Layout.createSequentialGroup()
-                        .addComponent(jLabel5)
+                        .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.TRAILING)
+                            .addComponent(jLabel6)
+                            .addComponent(jLabel15))
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(skuInput)))
-                .addGap(32, 32, 32)
-                .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
-                    .addGroup(jPanel5Layout.createSequentialGroup()
-                        .addComponent(jLabel6)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                        .addComponent(quantityInput, javax.swing.GroupLayout.PREFERRED_SIZE, 126, javax.swing.GroupLayout.PREFERRED_SIZE))
-                    .addComponent(transferButton, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
-                .addContainerGap(189, Short.MAX_VALUE))
+                        .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING, false)
+                            .addComponent(quantityInput)
+                            .addComponent(transferReasonDD, 0, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+                        .addGap(36, 36, 36)
+                        .addComponent(transferButton, javax.swing.GroupLayout.PREFERRED_SIZE, 138, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                .addContainerGap(249, Short.MAX_VALUE))
         );
         jPanel5Layout.setVerticalGroup(
             jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(jPanel5Layout.createSequentialGroup()
-                .addComponent(jScrollPane4, javax.swing.GroupLayout.PREFERRED_SIZE, 239, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(29, 29, 29)
+                .addComponent(jLabel8)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jTextField1, javax.swing.GroupLayout.PREFERRED_SIZE, 32, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel12)
+                    .addComponent(jComboBox1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                .addComponent(jScrollPane4, javax.swing.GroupLayout.DEFAULT_SIZE, 239, Short.MAX_VALUE)
                 .addGap(18, 18, 18)
                 .addComponent(jLabel2)
                 .addGap(18, 18, 18)
@@ -288,32 +508,34 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
                     .addComponent(skuInput, javax.swing.GroupLayout.PREFERRED_SIZE, 27, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel5)
                     .addComponent(jLabel6)
-                    .addComponent(quantityInput, javax.swing.GroupLayout.PREFERRED_SIZE, 27, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(39, 39, 39)
+                    .addComponent(quantityInput, javax.swing.GroupLayout.PREFERRED_SIZE, 27, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(transferButton, javax.swing.GroupLayout.PREFERRED_SIZE, 40, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addGap(18, 18, 18)
                 .addGroup(jPanel5Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel3)
                     .addComponent(transferFromDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel4)
                     .addComponent(transferToDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(transferButton, javax.swing.GroupLayout.PREFERRED_SIZE, 40, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(0, 63, Short.MAX_VALUE))
+                    .addComponent(jLabel15)
+                    .addComponent(transferReasonDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addGap(41, 41, 41))
         );
 
         jTabbedPane1.addTab("Stock Management & Transfer Forms", jPanel5);
 
         transferRecord.setModel(new javax.swing.table.DefaultTableModel(
             new Object [][] {
-                {null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null},
-                {null, null, null, null, null, null, null, null}
+                {null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null}
             },
             new String [] {
-                "Trasfer ID", "SKU", "From", "To", "Quantity", "Unit Cost", "Total Cost", "Date"
+                "Trasfer ID", "SKU", "From", "To", "Quantity", "Unit Cost", "Total Cost", "Date", "Notes"
             }
         ) {
             boolean[] canEdit = new boolean [] {
-                false, false, false, false, false, false, false, false
+                false, false, false, false, false, false, false, false, false
             };
 
             public boolean isCellEditable(int rowIndex, int columnIndex) {
@@ -331,6 +553,7 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
             transferRecord.getColumnModel().getColumn(5).setResizable(false);
             transferRecord.getColumnModel().getColumn(6).setResizable(false);
             transferRecord.getColumnModel().getColumn(7).setResizable(false);
+            transferRecord.getColumnModel().getColumn(8).setResizable(false);
         }
 
         jLabel7.setText("Grand Total: ");
@@ -346,26 +569,100 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
         jPanel2.setLayout(jPanel2Layout);
         jPanel2Layout.setHorizontalGroup(
             jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
-            .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 846, Short.MAX_VALUE)
+            .addComponent(jScrollPane2, javax.swing.GroupLayout.DEFAULT_SIZE, 1121, Short.MAX_VALUE)
             .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, jPanel2Layout.createSequentialGroup()
                 .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                 .addComponent(jLabel7)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
-                .addComponent(grandTotalOutput, javax.swing.GroupLayout.PREFERRED_SIZE, 215, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addComponent(grandTotalOutput, javax.swing.GroupLayout.PREFERRED_SIZE, 215, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap())
         );
         jPanel2Layout.setVerticalGroup(
             jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, jPanel2Layout.createSequentialGroup()
-                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
-                .addComponent(jScrollPane2, javax.swing.GroupLayout.PREFERRED_SIZE, 236, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED)
+                .addContainerGap(62, Short.MAX_VALUE)
+                .addComponent(jScrollPane2, javax.swing.GroupLayout.PREFERRED_SIZE, 365, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addGroup(jPanel2Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
                     .addComponent(jLabel7)
                     .addComponent(grandTotalOutput, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(176, 176, 176))
+                .addGap(53, 53, 53))
         );
 
         jTabbedPane1.addTab("Stock Transfer Record", jPanel2);
+
+        stockMovement.setModel(new javax.swing.table.DefaultTableModel(
+            new Object [][] {
+                {null, null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null, null},
+                {null, null, null, null, null, null, null, null, null, null}
+            },
+            new String [] {
+                "Movement ID", "Inventory ID", "Movement Type", "Beginning Quantity", "Stock IN", "Stock OUT", "Resulting Quantity", "Transfer ID", "Movement Date", "Notes"
+            }
+        ) {
+            boolean[] canEdit = new boolean [] {
+                false, false, false, false, false, false, false, false, false, false
+            };
+
+            public boolean isCellEditable(int rowIndex, int columnIndex) {
+                return canEdit [columnIndex];
+            }
+        });
+        jScrollPane1.setViewportView(stockMovement);
+        if (stockMovement.getColumnModel().getColumnCount() > 0) {
+            stockMovement.getColumnModel().getColumn(0).setResizable(false);
+            stockMovement.getColumnModel().getColumn(1).setResizable(false);
+            stockMovement.getColumnModel().getColumn(2).setResizable(false);
+            stockMovement.getColumnModel().getColumn(3).setResizable(false);
+            stockMovement.getColumnModel().getColumn(4).setResizable(false);
+            stockMovement.getColumnModel().getColumn(5).setResizable(false);
+            stockMovement.getColumnModel().getColumn(6).setResizable(false);
+            stockMovement.getColumnModel().getColumn(7).setResizable(false);
+            stockMovement.getColumnModel().getColumn(8).setResizable(false);
+            stockMovement.getColumnModel().getColumn(9).setResizable(false);
+        }
+
+        jLabel14.setText("Location: ");
+
+        location.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "All Location", "Warehouse A", "Main Branch" }));
+
+        jLabel16.setText("Movement: ");
+
+        movement.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "All", "Stock In", "Stock Out" }));
+
+        javax.swing.GroupLayout jPanel3Layout = new javax.swing.GroupLayout(jPanel3);
+        jPanel3.setLayout(jPanel3Layout);
+        jPanel3Layout.setHorizontalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(jPanel3Layout.createSequentialGroup()
+                .addContainerGap()
+                .addComponent(jLabel14)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(location, javax.swing.GroupLayout.PREFERRED_SIZE, 173, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addGap(71, 71, 71)
+                .addComponent(jLabel16)
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                .addComponent(movement, javax.swing.GroupLayout.PREFERRED_SIZE, 161, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+            .addComponent(jScrollPane1, javax.swing.GroupLayout.DEFAULT_SIZE, 1121, Short.MAX_VALUE)
+        );
+        jPanel3Layout.setVerticalGroup(
+            jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, jPanel3Layout.createSequentialGroup()
+                .addGap(36, 36, 36)
+                .addGroup(jPanel3Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+                    .addComponent(jLabel14)
+                    .addComponent(location, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+                    .addComponent(jLabel16)
+                    .addComponent(movement, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addGap(50, 50, 50)
+                .addComponent(jScrollPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 349, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap(52, Short.MAX_VALUE))
+        );
+
+        jTabbedPane1.addTab("Stock Movement Records", jPanel3);
 
         inventoryReportTbl.setModel(new javax.swing.table.DefaultTableModel(
             new Object [][] {
@@ -400,7 +697,7 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
 
         jLabel10.setText("Location:");
 
-        locationDD.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "Warehouse A", "Main Branch" }));
+        locationDD.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "All Location ", "Warehouse A", "Main Branch" }));
         locationDD.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 locationDDActionPerformed(evt);
@@ -413,13 +710,6 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
         statusDD.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 statusDDActionPerformed(evt);
-            }
-        });
-
-        generateReportButton.setText("Generate Report");
-        generateReportButton.addActionListener(new java.awt.event.ActionListener() {
-            public void actionPerformed(java.awt.event.ActionEvent evt) {
-                generateReportButtonActionPerformed(evt);
             }
         });
 
@@ -442,10 +732,7 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
                                 .addComponent(jLabel11)
                                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                                 .addComponent(statusDD, javax.swing.GroupLayout.PREFERRED_SIZE, 180, javax.swing.GroupLayout.PREFERRED_SIZE)))
-                        .addGap(0, 289, Short.MAX_VALUE))
-                    .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, jPanel4Layout.createSequentialGroup()
-                        .addGap(0, 635, Short.MAX_VALUE)
-                        .addComponent(generateReportButton, javax.swing.GroupLayout.PREFERRED_SIZE, 187, javax.swing.GroupLayout.PREFERRED_SIZE)))
+                        .addGap(0, 564, Short.MAX_VALUE)))
                 .addContainerGap())
         );
         jPanel4Layout.setVerticalGroup(
@@ -458,37 +745,43 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
                     .addComponent(jLabel10)
                     .addComponent(locationDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                     .addComponent(jLabel11)
-                    .addComponent(statusDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                    .addComponent(generateReportButton, javax.swing.GroupLayout.PREFERRED_SIZE, 36, javax.swing.GroupLayout.PREFERRED_SIZE))
-                .addGap(53, 53, 53)
-                .addComponent(jScrollPane3, javax.swing.GroupLayout.PREFERRED_SIZE, 230, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addContainerGap(87, Short.MAX_VALUE))
+                    .addComponent(statusDD, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+                .addGap(35, 35, 35)
+                .addComponent(jScrollPane3, javax.swing.GroupLayout.PREFERRED_SIZE, 342, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addContainerGap(54, Short.MAX_VALUE))
         );
 
         jTabbedPane1.addTab("Inventory Reports", jPanel4);
+
+        jLabel13.setFont(new java.awt.Font("Tahoma", 2, 10)); // NOI18N
+        jLabel13.setText("by: Calbario");
 
         javax.swing.GroupLayout jPanel1Layout = new javax.swing.GroupLayout(jPanel1);
         jPanel1.setLayout(jPanel1Layout);
         jPanel1Layout.setHorizontalGroup(
             jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, jPanel1Layout.createSequentialGroup()
+                .addContainerGap(javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                .addComponent(jLabel13))
             .addGroup(jPanel1Layout.createSequentialGroup()
                 .addGroup(jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
                     .addGroup(jPanel1Layout.createSequentialGroup()
                         .addGap(32, 32, 32)
-                        .addComponent(jTabbedPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 851, javax.swing.GroupLayout.PREFERRED_SIZE))
+                        .addComponent(jTabbedPane1, javax.swing.GroupLayout.PREFERRED_SIZE, 1126, javax.swing.GroupLayout.PREFERRED_SIZE))
                     .addGroup(jPanel1Layout.createSequentialGroup()
-                        .addGap(360, 360, 360)
+                        .addGap(448, 448, 448)
                         .addComponent(jLabel1)))
-                .addContainerGap(40, Short.MAX_VALUE))
+                .addGap(0, 51, Short.MAX_VALUE))
         );
         jPanel1Layout.setVerticalGroup(
             jPanel1Layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
             .addGroup(jPanel1Layout.createSequentialGroup()
-                .addContainerGap()
+                .addGap(21, 21, 21)
                 .addComponent(jLabel1)
-                .addGap(37, 37, 37)
+                .addGap(26, 26, 26)
                 .addComponent(jTabbedPane1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
-                .addContainerGap(35, Short.MAX_VALUE))
+                .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                .addComponent(jLabel13))
         );
 
         javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
@@ -545,6 +838,20 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
          performStockTransfer();
     }//GEN-LAST:event_transferButtonActionPerformed
 
+    private void jTextField1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jTextField1ActionPerformed
+        // TODO add your handling code here:
+    }//GEN-LAST:event_jTextField1ActionPerformed
+
+    private void jComboBox1ActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jComboBox1ActionPerformed
+        // TODO add your handling code here:
+        applyInventoryFilters();
+
+    }//GEN-LAST:event_jComboBox1ActionPerformed
+
+    private void transferReasonDDActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_transferReasonDDActionPerformed
+        // TODO add your handling code here:
+    }//GEN-LAST:event_transferReasonDDActionPerformed
+
     /**
      * @param args the command line arguments
      */
@@ -589,36 +896,52 @@ private final InventoryDAO inventoryDAO = new InventoryDAO();
     public javax.swing.JComboBox getTransferToDD() { return transferToDD; }
     public javax.swing.JComboBox getLocationDD() { return locationDD; }
     public javax.swing.JComboBox getStatusDD() { return statusDD; }
+    public javax.swing.JTable getStockMovement() { return stockMovement; }
+    public javax.swing.JComboBox getMovementLocationDD() { return location; }
+    public javax.swing.JComboBox getMovementTypeDD() { return movement; }
 
     // Variables declaration - do not modify//GEN-BEGIN:variables
-    private javax.swing.JButton generateReportButton;
     private javax.swing.JTextField grandTotalOutput;
     private javax.swing.JTable inventoryReportTbl;
     private javax.swing.JTable inventoryTable;
+    private javax.swing.JComboBox jComboBox1;
     private javax.swing.JLabel jLabel1;
     private javax.swing.JLabel jLabel10;
     private javax.swing.JLabel jLabel11;
+    private javax.swing.JLabel jLabel12;
+    private javax.swing.JLabel jLabel13;
+    private javax.swing.JLabel jLabel14;
+    private javax.swing.JLabel jLabel15;
+    private javax.swing.JLabel jLabel16;
     private javax.swing.JLabel jLabel2;
     private javax.swing.JLabel jLabel3;
     private javax.swing.JLabel jLabel4;
     private javax.swing.JLabel jLabel5;
     private javax.swing.JLabel jLabel6;
     private javax.swing.JLabel jLabel7;
+    private javax.swing.JLabel jLabel8;
     private javax.swing.JLabel jLabel9;
     private javax.swing.JPanel jPanel1;
     private javax.swing.JPanel jPanel2;
+    private javax.swing.JPanel jPanel3;
     private javax.swing.JPanel jPanel4;
     private javax.swing.JPanel jPanel5;
+    private javax.swing.JScrollPane jScrollPane1;
     private javax.swing.JScrollPane jScrollPane2;
     private javax.swing.JScrollPane jScrollPane3;
     private javax.swing.JScrollPane jScrollPane4;
     private javax.swing.JTabbedPane jTabbedPane1;
+    private javax.swing.JTextField jTextField1;
+    private javax.swing.JComboBox location;
     private javax.swing.JComboBox locationDD;
+    private javax.swing.JComboBox movement;
     private javax.swing.JTextField quantityInput;
     private javax.swing.JTextField skuInput;
     private javax.swing.JComboBox statusDD;
+    private javax.swing.JTable stockMovement;
     private javax.swing.JButton transferButton;
     private javax.swing.JComboBox transferFromDD;
+    private javax.swing.JComboBox transferReasonDD;
     private javax.swing.JTable transferRecord;
     private javax.swing.JComboBox transferToDD;
     // End of variables declaration//GEN-END:variables

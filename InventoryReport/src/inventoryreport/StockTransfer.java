@@ -1,23 +1,21 @@
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
- */
 package inventoryreport;
 
 import java.sql.Timestamp;
 
 public class StockTransfer {
-    private int transferId;
-    private String sku;
-    private String fromLocation;
-    private String toLocation;
-    private int qtyTransferred;
-    private double unitCost;
-    private double totalTransferCost;
-    private Timestamp transferDate;
+    private final int transferId;
+    private final String sku;
+    private final String fromLocation;
+    private final String toLocation;
+    private final int qtyTransferred;
+    private final double unitCost;
+    private final double totalTransferCost;
+    private final Timestamp transferDate;
+    private final String notes;
 
-    public StockTransfer(int transferId, String sku, String fromLocation, String toLocation, int qtyTransferred, double unitCost, double totalTransferCost, Timestamp transferDate) {
+    public StockTransfer(int transferId, String sku, String fromLocation, String toLocation,
+                         int qtyTransferred, double unitCost, double totalTransferCost,
+                         Timestamp transferDate, String notes) {
         this.transferId = transferId;
         this.sku = sku;
         this.fromLocation = fromLocation;
@@ -26,6 +24,7 @@ public class StockTransfer {
         this.unitCost = unitCost;
         this.totalTransferCost = totalTransferCost;
         this.transferDate = transferDate;
+        this.notes = notes;
     }
 
     public int getTransferId() { return transferId; }
@@ -36,4 +35,5 @@ public class StockTransfer {
     public double getUnitCost() { return unitCost; }
     public double getTotalTransferCost() { return totalTransferCost; }
     public Timestamp getTransferDate() { return transferDate; }
+    public String getNotes() { return notes; }
 }
