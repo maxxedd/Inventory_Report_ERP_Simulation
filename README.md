@@ -27,9 +27,12 @@ src/
 └── inventoryreport/
     ├── InventoryItem.java        # POJO representing an inventory item
     ├── StockTransfer.java        # POJO representing a stock transfer transaction
-    ├── InventoryDAO.java         # Data Access Object (Database queries & transactions)
-    ├── InventoryReportFRM.java   # Swing GUI Form (View & Controller logic)
-    └── InventoryReport.java      # Application entry point (main method)
+    ├── StockMovement.java        # POJO representing a stock movement record
+    ├── InventoryReport.java      # Application entry point (main method)
+    ├── InventoryReportFRM.java   # Swing GUI (View / UI layer)
+    ├── InventoryService.java     # Service / Control layer and business validation
+    ├── InventoryDAO.java         # DAO layer (database queries and transactions)
+    └── DBConnection.java         # HikariCP connection management
 Prerequisites
 Java Development Kit (JDK): Version 8 or higher
 
